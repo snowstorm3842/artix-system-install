@@ -1,0 +1,176 @@
+#!/bin/sh
+
+# ---------------------------- Add Arch Repos ----------------------------
+pacman --noconfirm -S artix-archlinux-support
+sed -i '87i\
+\[community\]\
+Include = \/etc\/pacman\.d\/mirrorlist-arch\
+\
+\[extra\]\
+Include = \/etc\/pacman\.d\/mirrorlist-arch\
+' /etc/pacman.conf
+
+# ----------------------------- Install Base -----------------------------
+basestrap /mnt base base-devel runit elogind-runit \
+linux-hardened linux-hardened-headers usbctl linux-firmware wireless-regdb git
+
+# ---------------------------- Generate fstab ----------------------------
+fstabgen -U /mnt >> /mnt/etc/fstab
+
+# ---------------------- Copy pacman.conf to chroot ----------------------
+cp /etc/pacman.conf /mnt/etc/pacman.conf
+
+# --------------------- Copy install files to chroot ---------------------
+mkdir /mnt/system-install
+cp ./* /mnt/system-install
+
+# -------------------------------- Chroot --------------------------------
+artix-chroot /mnt
+
+# ---------------------------- Set Systemclock ---------------------------
+printf "%s" "Timezone? "
+read -r timezone
+ln -sf "/usr/share/zoneinfo/${timezone}" /etc/localtime
+sed -i "s/# HARDWARE/HARDWARE/" /etc/rc/rc.conf
+hwclock --systohc
+
+# -------------------------------- Locale --------------------------------
+sed -i 's/#ja_JP\.UTF/ja_JP\.UTF/;s/#en_US\.UTF/en_US\.UTF/' /etc/locale.gen
+locale-gen
+printf '%s' \
+'LANG=""ja_JP.UTF-8""
+LC_CTYPE="ja_JP.UTF-8"
+LC_NUMERIC="ja_JP.UTF-8"
+LC_TIME="ja_JP.UTF-8"
+LC_COLLATE="C"
+LC_MONETARY="ja_JP.UTF-8"
+LC_MESSAGES="ja_JP.UTF-8"
+LC_PAPER="ja_JP.UTF-8"
+LC_NAME="ja_JP.UTF-8"
+LC_ADDRESS="ja_JP.UTF-8"
+LC_TELEPHONE="ja_JP.UTF-8"
+LC_MEASUREMENT="ja_JP.UTF-8"
+LC_IDENTIFICATION="ja_JP.UTF-8"
+LC_ALL="C"
+' > /etc/locale.conf
+
+# --------------------------------- Grub ---------------------------------
+pacman --noconfirm -S grub
+grub-install --recheck /dev/sda
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# ------------------------------- Add User -------------------------------
+echo "-- Enter root passord --"
+passwd
+printf "%s" "User: "
+read -r user
+useradd -m -g users -G wheel "$user"
+passwd "$user"
+
+# --------------------------------- Hosts --------------------------------
+printf '%s' \
+"127.0.0.1   localhost
+::1         localhost
+127.0.1.1   ${user}box
+" > /etc/hosts
+
+# ------------------------------- Hostname -------------------------------
+echo "${user}box" > /etc/hostname
+
+# ---------------------------- Wireless reg-db ---------------------------
+printf "crda country:"
+read -r crda
+sed "s/#WIRELESS_REGDOM=\"${crda}\"/WIRELESS_REGDOM=\"${crda}\"/" /etc/conf.d/wireless-regdom
+
+# ----------------------- Remove sudo Install doas -----------------------
+pacman --noconfirm -Rns sudo
+pacman --noconfirm -S opendoas
+echo "permit persist :wheel" > /etc/doas.conf
+ln -s /usr/bin/doas /usr/bin/sudo
+
+# ------------------------- Setup NetworkManager -------------------------
+pacman --noconfirm -S networkmanager-runit wpa_supplicant
+ln -s /etc/runit/sv/NetworkManager/ /etc/runit/runsvdir/default/
+
+# ----------------------------- Setup Chrony -----------------------------
+pacman --noconfirm -S chrony-runit
+ln -s /etc/runit/sv/chrony /etc/runit/runsvdir/default/
+sed -i '30,34c\
+server ptbtime1.ptb.de iburst nts offline\n\
+server ptbtime2.ptb.de iburst nts offline\n\
+server ptbtime3.ptb.de iburst nts offline\n\
+server nts1.time.nl iburst nts offline\n\
+server nts.ntp.se iburst nts offline\n\
+server nts.sth1.ntp.se iburst nts offline\n\
+server nts.sth2.ntp.se iburst nts offline\n\
+server time.cloudflare.com iburst nts offline
+s/! rtconutc/ rtconutc/' /etc/chrony.conf
+
+# ---------------------------- Setup Apparmor ----------------------------
+pacman --noconfirm -S apparmor-runit audit-runit
+sed -i 's/loglevel=3 quiet/loglevel=3 quiet lsm=landlock,lockdown,yama,apparmor,bpf audit=1/' /etc/default/grub
+sed -i 's/APPARMOR=disable/APPARMOR=enforce/' /etc/rc/apparmor.conf
+ln -s /etc/runit/sv/auditd/ /etc/runit/runsvdir/default/
+ln -s /etc/runit/sv/auditctl/ /etc/runit/runsvdir/default/
+
+# ------------------------- Make config for Grub -------------------------
+grub-mkconfig -o /boot/grub/grub.cfg
+
+# ---------------------------- Install Display ---------------------------
+pacman --noconfirm -S xorg xorg-xinit xf86-video-intel mesa-amber intel-ucode redshift feh
+
+# ------------------------------ Install DE ------------------------------
+mkdir suckless
+cd suckless || exit 1
+git clone https://git.suckless.org/dwm
+git clone https://git.suckless.org/st
+git clone https://git.suckless.org/dmenu
+
+for i in *; do
+    cd "$i" || exit 1
+    make clean install
+    cd - || exit 1
+done
+cd - || exit 1
+
+
+# ----------------------------- Install Fonts ----------------------------
+pacman --noconfirm -S otf-ipafont adobe-source-code-pro-fonts \
+noto-fonts ttf-nerd-fonts-symbols awesome-terminal-fonts
+
+# -------------------------- Set dash as /bin/sh -------------------------
+pacman --noconfirm -S dash
+ln -sfT dash /usr/bin/sh
+printf '%s' \
+'[Trigger]
+Type = Package
+Operation = Install
+Operation = Upgrade
+Target = bash
+
+[Action]
+Description = Re-pointing /bin/sh symlink to dash...
+When = PostTransaction
+Exec = /usr/bin/ln -sfT dash /usr/bin/sh
+Depends = dash
+' > /usr/share/libalpm/hooks/dash.hook
+
+# ------------------------------ Setup audio -----------------------------
+pacman --noconfirm -S mpd mpc pipewire pipewire-alsa pipewire-pulse wireplumber alsa-utils-runit
+ln -s /etc/runit/sv/alsa/ /etc/runit/runsvdir/default/
+
+# ------------------------- Setup dnscrypt-proxy -------------------------
+pacman -S dnscrypt-proxy-runit
+ln -s /etc/runit/sv/dnscrypt-proxy/ /etc/runit/runsvdir/default/
+
+# quad9 dns server
+sed -i "667,686c\
+\[sources]\n\
+\n\
+   \[sources.quad9-resolvers]\n\
+     urls = \[\"https://quad9.net/dnscrypt/quad9-resolvers.md\", \"https://raw.githubusercontent.com/Quad9DNS/dnscrypt-settings/main/dnscrypt/quad9-resolvers.md\"]\n\
+     minisign_key = \"RWQBphd2+f6eiAqBsvDZEBXBGHQBJfeG6G+wJPPKxCZMoEQYpmoysKUN\"\n\
+     cache_file = '/var/cache/dnscrypt-proxy/quad9-resolvers.md'\n\
+     refresh_delay = 72\n\
+     prefix = 'quad9-'\n\
+" /etc/dnscrypt-proxy/dnscrypt-proxy.toml
