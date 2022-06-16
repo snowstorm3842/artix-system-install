@@ -117,7 +117,8 @@ ln -s /etc/runit/sv/auditctl/ /etc/runit/runsvdir/default/
 grub-mkconfig -o /boot/grub/grub.cfg
 
 # ---------------------------- Install Display ---------------------------
-pacman --noconfirm -S xorg xorg-xinit xf86-video-intel mesa-amber intel-ucode redshift feh
+pacman --noconfirm -S xorg xorg-xinit xf86-video-intel mesa-amber intel-ucode redshift feh acpid-runit
+ls -s /etc/runit/sv/acpid/ /etc/runit/runsvdir/default/
 
 # ------------------------------ Install DE ------------------------------
 mkdir suckless
@@ -160,7 +161,7 @@ pacman --noconfirm -S mpd mpc pipewire pipewire-alsa pipewire-pulse wireplumber 
 ln -s /etc/runit/sv/alsa/ /etc/runit/runsvdir/default/
 
 # ------------------------- Setup dnscrypt-proxy -------------------------
-pacman -S dnscrypt-proxy-runit
+pacman --noconfirm -S dnscrypt-proxy-runit
 ln -s /etc/runit/sv/dnscrypt-proxy/ /etc/runit/runsvdir/default/
 
 # quad9 dns server
